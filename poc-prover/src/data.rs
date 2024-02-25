@@ -38,7 +38,7 @@ pub fn read_user_data(path: &str) -> Result<Vec<Fr>> {
                 Token::Uint(U256::from_dec_str(amount).unwrap()),
             ]);
 
-            let mut hash = keccak256(&encoded_data);
+            let mut hash = keccak256(encoded_data);
             hash.reverse();
 
             let mut u64_array = [0u64; 4];
