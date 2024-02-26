@@ -21,7 +21,7 @@ pub fn poly(points: Vec<Fr>) -> Result<(DensePolynomial<Fr>, Fr)> {
 }
 
 // calculate q(x) = (f(x) - yi) / (x - w^i)
-pub fn vanish(f: &DensePolynomial<Fr>, i: u64, y_i: Fr, w: Fr) -> DensePolynomial<Fr> {
+pub fn cal_witness_poly(f: &DensePolynomial<Fr>, i: u64, y_i: Fr, w: Fr) -> DensePolynomial<Fr> {
     let q = f.sub(&DensePolynomial::from_coefficients_vec(vec![y_i]));
 
     let x = DensePolynomial::from_coefficients_vec(vec![-w.pow([i]), Fr::one()]);
@@ -73,7 +73,7 @@ mod tests {
         ];
         let (f, w) = poly(points).unwrap();
 
-        let q = vanish(&f, 2, Fr::from(23u64), w);
+        let q = cal_witness_poly(&f, 2, Fr::from(23u64), w);
         assert_eq!(
             q,
             DensePolynomial::from_coefficients_vec(vec![

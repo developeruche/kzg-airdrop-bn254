@@ -2,22 +2,24 @@ use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
+use ark_poly_commit::{
+    kzg10::{Powers, Randomness, KZG10},
+    PCRandomness,
+};
 
-use crate::poly::vanish;
-
-pub struct CommitmentScheme {
-    poly: DensePolynomial<Fr>, // for quicker msm operation
-    w: Fr,                     // root of unity
-    srs_g1: Vec<G1Affine>,
+pub struct CommitmentScheme<'a> {
+    poly: &'a DensePolynomial<Fr>, // for quicker msm operation
+    w: Fr,                         // root of unity
+    powers: Powers<'a, Bn254>,     // srs_g1
     srs_g2: Vec<G2Affine>,
 }
 
-impl CommitmentScheme {
+impl<'a> CommitmentScheme<'a> {
     // poly's length must be 2^k
     pub fn setup(
-        poly: DensePolynomial<Fr>,
+        poly: &'a DensePolynomial<Fr>,
         w: Fr,
-        srs_g1: Vec<G1Affine>,
+        srs_g1: &'a [G1Affine],
         srs_g2: Vec<G2Affine>,
     ) -> Self {
         assert_eq!(
@@ -29,21 +31,42 @@ impl CommitmentScheme {
         CommitmentScheme {
             poly,
             w,
-            srs_g1,
+            powers: Powers {
+                powers_of_g: srs_g1.into(),
+                powers_of_gamma_g: srs_g1.into(),
+            },
             srs_g2,
         }
     }
 
     pub fn commit(&self) -> G1Affine {
-        commit(&self.poly, &self.srs_g1)
+        KZG10::commit(&self.powers, &self.poly.clone(), None, None)
+            .unwrap()
+            .0
+             .0
     }
 
     pub fn open(&self, x_idx: u64) -> (Fr, G1Affine) {
         let x = self.w.pow([x_idx]);
         let y = self.poly.evaluate(&x);
-        let vanishing_poly = vanish(&self.poly, x_idx, y, self.w);
-        let point = commit(&vanishing_poly, &self.srs_g1);
-        (y, point)
+
+        let witness_poly = KZG10::<Bn254, DensePolynomial<Fr>>::compute_witness_polynomial(
+            self.poly,
+            x,
+            &Randomness::<Fr, DensePolynomial<Fr>>::empty(),
+        )
+        .unwrap()
+        .0;
+
+        let (num_leading_zeros, witness_coeffs) =
+            skip_leading_zeros_and_convert_to_bigints(&witness_poly);
+
+        let w = <G1Projective as VariableBaseMSM>::msm_bigint(
+            &self.powers.powers_of_g[num_leading_zeros..],
+            &witness_coeffs,
+        );
+
+        (y, w.into_affine())
     }
 
     // e(C- yG1, G2) = e(H, \tau G2 - xG2)
@@ -58,22 +81,21 @@ impl CommitmentScheme {
     }
 }
 
-pub fn commit(poly: &DensePolynomial<Fr>, srs_g1: &[G1Affine]) -> G1Affine {
-    // use std::ops::Mul;
+fn skip_leading_zeros_and_convert_to_bigints<F: PrimeField, P: DenseUVPolynomial<F>>(
+    p: &P,
+) -> (usize, Vec<F::BigInt>) {
+    let mut num_leading_zeros = 0;
+    while num_leading_zeros < p.coeffs().len() && p.coeffs()[num_leading_zeros].is_zero() {
+        num_leading_zeros += 1;
+    }
+    let coeffs = convert_to_bigints(&p.coeffs()[num_leading_zeros..]);
+    (num_leading_zeros, coeffs)
+}
 
-    // poly.coeffs()
-    //     .iter()
-    //     .zip(srs_g1.iter())
-    //     .fold(G1Affine::identity(), |acc, (a_i, g_i)| {
-    //         (acc + g_i.mul(a_i)).into()
-    //     })
-
-    let poly = poly
-        .coeffs()
-        .iter()
-        .map(|fr| fr.into_bigint())
-        .collect::<Vec<_>>();
-    <G1Projective as VariableBaseMSM>::msm_bigint(srs_g1, &poly).into_affine()
+fn convert_to_bigints<F: PrimeField>(p: &[F]) -> Vec<F::BigInt> {
+    ark_std::cfg_iter!(p)
+        .map(|s| s.into_bigint())
+        .collect::<Vec<_>>()
 }
 
 #[cfg(test)]
@@ -106,7 +128,8 @@ mod tests {
         ];
 
         let (f, w) = poly(points).unwrap();
-        let cs = CommitmentScheme::setup(f, w, new_srs().0, new_srs().1);
+        let srs = new_srs();
+        let cs = CommitmentScheme::setup(&f, w, &srs.0, srs.1);
 
         let commit = cs.commit();
 
