@@ -2296,6 +2296,7 @@ dependencies = [
  "ark-std",
  "csv",
  "ethers",
+ "rand",
  "serde",
  "serde_json",
  "thiserror",
